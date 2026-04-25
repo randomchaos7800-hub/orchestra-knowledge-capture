@@ -40,6 +40,7 @@ import json
 import logging
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -84,18 +85,29 @@ def _llm_call(
     system: str,
     user: str,
     max_tokens: int,
+    model: str | None = None,
 ) -> str:
-    """Single chat completion. Returns stripped response text."""
-    model = config.llm_model()
-    response = client.chat.completions.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
-    return (response.choices[0].message.content or "").strip()
+    """Single chat completion with retry. Returns stripped response text."""
+    if model is None:
+        model = config.llm_model()
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=0.0,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            )
+            return (response.choices[0].message.content or "").strip()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    raise RuntimeError(f"LLM call failed after 3 attempts: {last_exc}") from last_exc
 
 
 # ── Wiki section discovery ─────────────────────────────────────────────────────
@@ -720,7 +732,7 @@ All string values must be single-line. core_concepts: 3-5 key terms per article.
         logger.info("Pass 1 prompt (%d chars):\n%s...", len(plan_user), plan_user[:400])
 
     try:
-        plan_raw = _llm_call(client, plan_system, plan_user, max_tokens=2000)
+        plan_raw = _llm_call(client, plan_system, plan_user, max_tokens=2000, model=config.plan_model())
     except Exception as exc:  # noqa: BLE001
         logger.error("Pass 1 LLM call failed for %s: %s", raw_path.name, exc)
         return []
@@ -832,7 +844,7 @@ Bare [[slug]] is valid and defaults to references."""
                         path_str, len(content_user), content_user[:400])
 
         try:
-            content = _llm_call(client, content_system, content_user, max_tokens=4000)
+            content = _llm_call(client, content_system, content_user, max_tokens=4000, model=config.write_model())
         except Exception as exc:  # noqa: BLE001
             logger.error("Pass 2 LLM call failed for %s: %s", path_str, exc)
             continue

@@ -15,6 +15,8 @@ from pydantic import BaseModel
 
 import config
 
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -23,6 +25,11 @@ templates: Optional[Jinja2Templates] = None
 kb_name: str = "Knowledge Base"
 
 WIKI_SECTIONS = ["concepts", "entities", "research", "events"]
+
+# Health cache: recompute at most once per 60 seconds
+_health_cache: Optional[dict] = None
+_health_cache_ts: float = 0.0
+_HEALTH_TTL = 60.0
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -74,6 +81,20 @@ def _compile(raw_path: Path) -> list[str]:
     return compile_file(raw_path)
 
 
+def _invalidate_health_cache() -> None:
+    global _health_cache
+    _health_cache = None
+
+
+def _reindex() -> None:
+    """Re-index after compile so search reflects new articles immediately."""
+    try:
+        from search.hybrid import index_articles
+        index_articles(force=False, verbose=False)
+    except Exception:
+        pass
+
+
 # ── UI ────────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
@@ -90,6 +111,11 @@ async def index(request: Request):
 # ── Health ────────────────────────────────────────────────────────────────────
 
 def _build_health() -> dict:
+    global _health_cache, _health_cache_ts
+    now = time.monotonic()
+    if _health_cache is not None and (now - _health_cache_ts) < _HEALTH_TTL:
+        return _health_cache
+
     wiki = config.wiki_dir()
     counts = {}
     total = 0
@@ -98,26 +124,22 @@ def _build_health() -> dict:
         counts[s] = n
         total += n
 
-    # Orphan count: articles with no backlinks
+    # Single-pass backlink index
     orphans = 0
     try:
         backlinks: dict[str, int] = {}
+        all_stems: list[str] = []
         for s in WIKI_SECTIONS:
             d = wiki / s
             if not d.exists():
                 continue
             for md in d.rglob("*.md"):
+                all_stems.append(md.stem)
                 text = md.read_text(encoding="utf-8")
                 for m in re.finditer(r"\[\[(?:[a-z_-]+:)?([^\]]+)\]\]", text):
                     slug = m.group(1).strip()
                     backlinks[slug] = backlinks.get(slug, 0) + 1
-        for s in WIKI_SECTIONS:
-            d = wiki / s
-            if not d.exists():
-                continue
-            for md in d.rglob("*.md"):
-                if backlinks.get(md.stem, 0) == 0:
-                    orphans += 1
+        orphans = sum(1 for stem in all_stems if backlinks.get(stem, 0) == 0)
     except Exception:
         pass
 
@@ -127,12 +149,15 @@ def _build_health() -> dict:
         ts = index_file.stat().st_mtime
         last_updated = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
-    return {
+    result = {
         "total": total,
         "counts": counts,
         "orphans": orphans,
         "last_updated": last_updated,
     }
+    _health_cache = result
+    _health_cache_ts = now
+    return result
 
 
 @router.get("/api/health")
@@ -151,7 +176,10 @@ async def ingest_file(file: UploadFile = File(...)):
     suffix = Path(file.filename or "upload").suffix.lower()
     tmp = Path("/tmp") / f"kc-upload-{int(t0)}{suffix}"
     try:
-        tmp.write_bytes(await file.read())
+        data = await file.read()
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail=f"File exceeds 50 MB limit ({len(data) // 1024 // 1024} MB)")
+        tmp.write_bytes(data)
 
         if suffix == ".pdf":
             from ingest.pdf import extract_pdf
@@ -170,6 +198,8 @@ async def ingest_file(file: UploadFile = File(...)):
         before = _article_count_before()
         raw_path = _save_raw(content, slug)
         articles = _compile(raw_path)
+        _reindex()
+        _invalidate_health_cache()
         return {
             "articles_created": _count_new(before),
             "articles": articles,
@@ -196,6 +226,8 @@ async def ingest_url(body: UrlIngest):
         before = _article_count_before()
         raw_path = _save_raw(content, slug)
         articles = _compile(raw_path)
+        _reindex()
+        _invalidate_health_cache()
         return {
             "title": title,
             "articles_created": _count_new(before),
@@ -219,6 +251,8 @@ async def ingest_text(body: TextIngest):
         before = _article_count_before()
         raw_path = _save_raw(content, slug)
         articles = _compile(raw_path)
+        _reindex()
+        _invalidate_health_cache()
         return {
             "articles_created": _count_new(before),
             "articles": articles,
@@ -241,6 +275,8 @@ async def seed(body: SeedRequest):
             description=body.description,
             n_articles=max(1, min(body.n_articles, 20)),
         )
+        _reindex()
+        _invalidate_health_cache()
         result["elapsed"] = round(time.monotonic() - t0, 1)
         return result
     except Exception as e:

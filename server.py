@@ -50,7 +50,8 @@ _routes.templates = templates
 _routes.kb_name = config.kb_name()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entry point for `orchestra-kc` CLI (defined in pyproject.toml)."""
     uvicorn.run(
         "server:app",
         host=config.server_host(),
@@ -58,3 +59,7 @@ if __name__ == "__main__":
         reload=False,
         log_level="info",
     )
+
+
+if __name__ == "__main__":
+    main()

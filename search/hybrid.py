@@ -13,6 +13,8 @@ import re
 import sys
 from pathlib import Path
 
+import yaml
+
 # Suppress HuggingFace Hub noise before any HF imports.
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
@@ -34,14 +36,10 @@ def _chroma_dir() -> Path:
 COLLECTION_NAME = "wiki_articles"
 
 # ---------------------------------------------------------------------------
-# Frontmatter parser (pure-regex, no yaml dependency)
+# Frontmatter parser
 # ---------------------------------------------------------------------------
 
 _FM_BLOCK_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
-# Inline list:  key: [a, b, c]
-_FM_INLINE_LIST_RE = re.compile(r"^([\w_]+):\s*\[([^\]]*)\]\s*$")
-# Plain scalar: key: value
-_FM_SCALAR_RE = re.compile(r"^([\w_]+):\s*(.+)$")
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -49,22 +47,20 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     m = _FM_BLOCK_RE.match(text)
     if not m:
         return {}, text
-    fm_block = m.group(1)
     body = text[m.end():]
-    meta: dict[str, str] = {}
-    for raw_line in fm_block.splitlines():
-        line = raw_line.strip()
-        # Skip blank lines and YAML list-item lines (- key: value).
-        if not line or line.startswith("-"):
-            continue
-        lm = _FM_INLINE_LIST_RE.match(line)
-        if lm:
-            meta[lm.group(1)] = lm.group(2)
-            continue
-        sm = _FM_SCALAR_RE.match(line)
-        if sm:
-            meta[sm.group(1)] = sm.group(2)
-    return meta, body
+    try:
+        parsed = yaml.safe_load(m.group(1)) or {}
+        meta = {k: v for k, v in parsed.items() if isinstance(k, str)} if isinstance(parsed, dict) else {}
+    except yaml.YAMLError:
+        meta = {}
+    # Normalise values to strings for ChromaDB metadata compatibility
+    str_meta: dict[str, str] = {}
+    for k, v in meta.items():
+        if isinstance(v, list):
+            str_meta[k] = ", ".join(str(i) for i in v)
+        else:
+            str_meta[k] = str(v) if v is not None else ""
+    return str_meta, body
 
 
 def _extract_snippet(body: str, max_chars: int = 120) -> str:

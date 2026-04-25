@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import date
 from pathlib import Path
 
@@ -91,15 +92,24 @@ def _make_client() -> OpenAI:
 
 def _llm_call(client: OpenAI, system: str, user: str, max_tokens: int) -> str:
     model = config.llm_model()
-    response = client.chat.completions.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
-    return (response.choices[0].message.content or "").strip()
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=0.0,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            )
+            return (response.choices[0].message.content or "").strip()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    raise RuntimeError(f"LLM call failed after 3 attempts: {last_exc}") from last_exc
 
 
 def _strip_json_fence(raw: str) -> str:

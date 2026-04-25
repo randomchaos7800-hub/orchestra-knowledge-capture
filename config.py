@@ -64,6 +64,16 @@ def qa_model() -> str:
     return _get("QA_MODEL") or llm_model()
 
 
+def plan_model() -> str:
+    """Model for Pass 1 (JSON planning). Defaults to OPENAI_MODEL."""
+    return _get("PLAN_MODEL") or llm_model()
+
+
+def write_model() -> str:
+    """Model for Pass 2 (article writing). Defaults to OPENAI_MODEL."""
+    return _get("WRITE_MODEL") or llm_model()
+
+
 # ── Server ────────────────────────────────────────────────────────────────────
 
 def server_host() -> str:

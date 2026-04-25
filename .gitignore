@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.chroma/
+*.egg-info/
+dist/
+build/
+.DS_Store
+*.log
+/wiki/
+/raw/

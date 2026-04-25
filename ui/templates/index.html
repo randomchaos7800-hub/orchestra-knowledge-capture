@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orchestra Knowledge Capture</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"></script>
+  <style>
+    /* Smooth loading indicator on htmx requests */
+    #global-spinner { display: none; }
+    .htmx-request #global-spinner { display: flex; }
+
+    /* Search debounce indicator */
+    .search-loading { opacity: 0.5; transition: opacity 0.2s; }
+
+    /* Tab hidden / shown */
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* Sub-tab hidden / shown */
+    .sub-panel { display: none; }
+    .sub-panel.active { display: block; }
+
+    /* Article content panel */
+    #article-content-panel pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* Seed progress pulse */
+    @keyframes pulse-text {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+    .seed-generating { animation: pulse-text 1.5s ease-in-out infinite; }
+
+    /* Markdown-like rendering for answer panel */
+    #answer-body h1, #answer-body h2, #answer-body h3 {
+      font-weight: 700;
+      margin-top: 1rem;
+      margin-bottom: 0.25rem;
+      color: #1e293b;
+    }
+    #answer-body h1 { font-size: 1.25rem; }
+    #answer-body h2 { font-size: 1.125rem; }
+    #answer-body h3 { font-size: 1rem; }
+    #answer-body p  { margin-bottom: 0.5rem; }
+    #answer-body ul { list-style: disc; padding-left: 1.5rem; margin-bottom: 0.5rem; }
+    #answer-body ol { list-style: decimal; padding-left: 1.5rem; margin-bottom: 0.5rem; }
+    #answer-body li { margin-bottom: 0.125rem; }
+    #answer-body code {
+      background: #f1f5f9;
+      padding: 0.125rem 0.375rem;
+      border-radius: 0.25rem;
+      font-size: 0.875em;
+    }
+    #answer-body strong { font-weight: 700; }
+    #answer-body em { font-style: italic; }
+    #answer-body blockquote {
+      border-left: 3px solid #94a3b8;
+      padding-left: 1rem;
+      color: #64748b;
+      margin: 0.5rem 0;
+    }
+  </style>
+</head>
+
+<body class="h-full bg-slate-50 text-slate-800 font-sans">
+
+<!-- ─── LAYOUT ──────────────────────────────────────────────────── -->
+<div class="flex h-screen overflow-hidden">
+
+  <!-- SIDEBAR -->
+  <aside class="w-56 flex-shrink-0 bg-slate-800 text-white flex flex-col">
+    <!-- Brand -->
+    <div class="px-5 py-5 border-b border-slate-700">
+      <div class="text-sm font-bold text-cyan-400 tracking-wide uppercase">Orchestra</div>
+      <div class="text-xs text-slate-400 mt-0.5">Knowledge Capture</div>
+    </div>
+
+    <!-- Nav -->
+    <nav class="flex-1 px-3 py-4 space-y-1">
+      <button onclick="switchTab('ingest')"  id="nav-ingest"  class="nav-btn w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors bg-slate-700 text-white">
+        Ingest
+      </button>
+      <button onclick="switchTab('search')"  id="nav-search"  class="nav-btn w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors text-slate-300 hover:bg-slate-700 hover:text-white">
+        Search
+      </button>
+      <button onclick="switchTab('ask')"     id="nav-ask"     class="nav-btn w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors text-slate-300 hover:bg-slate-700 hover:text-white">
+        Ask
+      </button>
+      <button onclick="switchTab('status')"  id="nav-status"  class="nav-btn w-full text-left px-3 py-2 rounded-md text-sm font-medium transition-colors text-slate-300 hover:bg-slate-700 hover:text-white">
+        Status
+      </button>
+    </nav>
+
+    <!-- Footer -->
+    <div class="px-5 py-4 border-t border-slate-700 text-xs text-slate-500">
+      LLM-compiled wiki
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="flex-1 overflow-y-auto">
+
+    <!-- Global spinner bar (htmx) -->
+    <div id="global-spinner" class="fixed top-0 left-56 right-0 z-50 h-0.5 bg-cyan-400 animate-pulse"></div>
+
+    <div class="max-w-5xl mx-auto px-6 py-8">
+
+      <!-- ══ INGEST TAB ══════════════════════════════════════════ -->
+      <div id="tab-ingest" class="tab-panel active">
+        <h1 class="text-2xl font-bold text-slate-800 mb-1">Ingest Content</h1>
+        <p class="text-sm text-slate-500 mb-6">Add source material to the knowledge base. The LLM compile pipeline extracts and structures it into wiki articles.</p>
+
+        <!-- Sub-tab bar -->
+        <div class="flex gap-1 mb-6 border-b border-slate-200">
+          <button onclick="switchSubTab('ingest','upload')" id="sub-ingest-upload" class="sub-btn px-4 py-2 text-sm font-medium border-b-2 border-cyan-500 text-cyan-600 -mb-px">Upload File</button>
+          <button onclick="switchSubTab('ingest','url')"    id="sub-ingest-url"    class="sub-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-700 -mb-px">Paste URL</button>
+          <button onclick="switchSubTab('ingest','text')"   id="sub-ingest-text"   class="sub-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-700 -mb-px">Paste Text</button>
+          <button onclick="switchSubTab('ingest','seed')"   id="sub-ingest-seed"   class="sub-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-700 -mb-px">Research Topic</button>
+        </div>
+
+        <!-- ── Upload File ── -->
+        <div id="sub-panel-upload" class="sub-panel active">
+          <div id="drop-zone"
+               class="border-2 border-dashed border-slate-300 rounded-xl p-10 text-center cursor-pointer hover:border-cyan-400 hover:bg-cyan-50 transition-colors"
+               onclick="document.getElementById('file-input').click()"
+               ondragover="event.preventDefault(); this.classList.add('border-cyan-400','bg-cyan-50')"
+               ondragleave="this.classList.remove('border-cyan-400','bg-cyan-50')"
+               ondrop="handleFileDrop(event)">
+            <div class="text-4xl mb-3">📄</div>
+            <p class="text-slate-600 font-medium">Drop a file here or click to browse</p>
+            <p class="text-xs text-slate-400 mt-1">Supported: PDF, .txt, .md, .docx</p>
+            <input id="file-input" type="file" accept=".pdf,.txt,.md,.docx" class="hidden" onchange="uploadFile(this.files[0])" />
+          </div>
+
+          <div id="upload-spinner" class="hidden mt-6 flex items-center gap-3 text-slate-500">
+            <svg class="animate-spin h-5 w-5 text-cyan-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+            </svg>
+            <span>Processing file…</span>
+          </div>
+          <div id="upload-result" class="mt-4"></div>
+        </div>
+
+        <!-- ── Paste URL ── -->
+        <div id="sub-panel-url" class="sub-panel">
+          <div class="bg-white rounded-xl border border-slate-200 p-6">
+            <label class="block text-sm font-medium text-slate-700 mb-2">URL to scrape</label>
+            <input id="url-input" type="url" placeholder="https://example.com/article"
+                   class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400" />
+            <button onclick="ingestURL()"
+                    class="mt-4 px-5 py-2 bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-medium rounded-lg transition-colors">
+              Scrape &amp; Compile
+            </button>
+          </div>
+          <div id="url-spinner" class="hidden mt-6 flex items-center gap-3 text-slate-500">
+            <svg class="animate-spin h-5 w-5 text-cyan-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+            </svg>
+            <span>Scraping and compiling…</span>
+          </div>
+          <div id="url-result" class="mt-4"></div>
+        </div>
+
+        <!-- ── Paste Text ── -->
+        <div id="sub-panel-text" class="sub-panel">
+          <div class="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-slate-700 mb-2">Title</label>
+              <input id="text-title" type="text" placeholder="e.g. Notes on Retrieval-Augmented Generation"
+                     class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-700 mb-2">Content</label>
+              <textarea id="text-body" rows="10" placeholder="Paste your text, notes, or research here…"
+                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-cyan-400 resize-y"></textarea>
+            </div>
+            <button onclick="ingestText()"
+                    class="px-5 py-2 bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-medium rounded-lg transition-colors">
+              Compile to Wiki
+            </button>
+          </div>
+          <div id="text-spinner" class="hidden mt-6 flex items-center gap-3 text-slate-500">
+            <svg class="animate-spin h-5 w-5 text-cyan-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+            </svg>
+            <span>Compiling…</span>
+          </div>
+          <div id="text-result" class="mt-4"></div>
+        </div>
+
+        <!-- ── Research Topic / Seed ── -->
+        <div id="sub-panel-seed" class="sub-panel">
+          <div class="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
+            <div>
+              <label class="block text-sm font-medium text-slate-700 mb-2">Topic name</label>
+              <input id="seed-topic" type="text" placeholder="e.g. Multi-Agent Orchestration"
+                     class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400" />
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-700 mb-2">Description <span class="font-normal text-slate-400">(optional)</span></label>
+              <textarea id="seed-description" rows="3"
+                        placeholder="A 1-2 sentence description to guide topic selection…"
+                        class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400 resize-y"></textarea>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-700 mb-2">
+                Articles to generate: <span id="seed-count-label" class="font-bold text-cyan-600">8</span>
+              </label>
+              <input id="seed-count" type="range" min="4" max="16" value="8"
+                     oninput="document.getElementById('seed-count-label').textContent = this.value"
+                     class="w-full accent-cyan-600" />
+              <div class="flex justify-between text-xs text-slate-400 mt-1">
+                <span>4 (fast)</span><span>16 (thorough)</span>
+              </div>
+            </div>
+            <div class="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm text-amber-800">
+              Seeding calls the LLM to generate structured research notes, then compiles each into wiki articles.
+              This typically takes <strong>30–120 seconds</strong> depending on article count.
+            </div>
+            <button onclick="seedTopic()"
+                    class="px-5 py-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition-colors">
+              Generate &amp; Compile
+            </button>
+          </div>
+
+          <!-- Seed loading state — prominent -->
+          <div id="seed-spinner" class="hidden mt-6 bg-violet-50 border border-violet-200 rounded-xl p-6 text-center">
+            <svg class="animate-spin h-10 w-10 text-violet-500 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+            </svg>
+            <p class="text-violet-800 font-semibold text-lg seed-generating">Generating and compiling articles…</p>
+            <p class="text-violet-600 text-sm mt-2">This may take 1–2 minutes. The LLM is writing research notes and compiling them into the wiki.</p>
+            <p class="text-violet-400 text-xs mt-3">Do not close or reload this tab.</p>
+          </div>
+
+          <div id="seed-result" class="mt-4"></div>
+        </div>
+
+      </div><!-- /tab-ingest -->
+
+
+      <!-- ══ SEARCH TAB ══════════════════════════════════════════ -->
+      <div id="tab-search" class="tab-panel">
+        <h1 class="text-2xl font-bold text-slate-800 mb-1">Search</h1>
+        <p class="text-sm text-slate-500 mb-6">Hybrid BM25 + vector search across all wiki articles.</p>
+
+        <div class="relative mb-6">
+          <svg class="absolute left-3 top-2.5 h-5 w-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+          </svg>
+          <input id="search-input" type="text" placeholder="Search the wiki…"
+                 class="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                 oninput="debounceSearch(this.value)" />
+        </div>
+
+        <!-- Results table -->
+        <div id="search-results-wrapper">
+          <p class="text-slate-400 text-sm text-center py-10">Type to search…</p>
+        </div>
+
+        <!-- Article detail panel -->
+        <div id="article-content-panel" class="hidden mt-6 bg-white border border-slate-200 rounded-xl">
+          <div class="flex items-center justify-between px-5 py-3 border-b border-slate-100">
+            <h2 id="article-content-title" class="font-semibold text-slate-800 text-sm"></h2>
+            <button onclick="closeArticle()" class="text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
+          </div>
+          <div class="px-5 py-4 max-h-96 overflow-y-auto">
+            <pre id="article-content-body" class="text-xs text-slate-700 font-mono leading-relaxed"></pre>
+          </div>
+        </div>
+      </div><!-- /tab-search -->
+
+
+      <!-- ══ ASK TAB ════════════════════════════════════════════ -->
+      <div id="tab-ask" class="tab-panel">
+        <h1 class="text-2xl font-bold text-slate-800 mb-1">Ask a Question</h1>
+        <p class="text-sm text-slate-500 mb-6">Grounded Q&amp;A — answers are drawn from the wiki, not LLM general knowledge.</p>
+
+        <div class="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-slate-700 mb-2">Your question</label>
+            <textarea id="ask-input" rows="4"
+                      placeholder="What are the key patterns in multi-agent orchestration?"
+                      class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400 resize-y"></textarea>
+          </div>
+          <button onclick="askQuestion()"
+                  class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition-colors">
+            Get Answer
+          </button>
+        </div>
+
+        <!-- Ask loading state -->
+        <div id="ask-spinner" class="hidden mt-6 flex items-center gap-3 text-slate-500">
+          <svg class="animate-spin h-6 w-6 text-emerald-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+          <span>Searching wiki and generating answer…</span>
+        </div>
+
+        <!-- Answer panel -->
+        <div id="ask-result-panel" class="hidden mt-6">
+          <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div class="bg-emerald-50 border-b border-emerald-100 px-5 py-3">
+              <h2 class="text-sm font-semibold text-emerald-800">Answer</h2>
+            </div>
+            <div class="px-5 py-4">
+              <div id="answer-body" class="text-sm text-slate-800 leading-relaxed prose max-w-none"></div>
+            </div>
+            <div id="ask-sources-wrapper" class="hidden border-t border-slate-100 px-5 py-4">
+              <h3 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Sources cited</h3>
+              <ul id="ask-sources-list" class="space-y-1"></ul>
+            </div>
+            <div class="border-t border-slate-100 px-5 py-2 bg-slate-50">
+              <span id="ask-elapsed" class="text-xs text-slate-400"></span>
+            </div>
+          </div>
+        </div>
+      </div><!-- /tab-ask -->
+
+
+      <!-- ══ STATUS TAB ═════════════════════════════════════════ -->
+      <div id="tab-status" class="tab-panel">
+        <div class="flex items-center justify-between mb-6">
+          <div>
+            <h1 class="text-2xl font-bold text-slate-800 mb-1">Knowledge Base Status</h1>
+            <p class="text-sm text-slate-500">Article counts, health metrics, and last update time.</p>
+          </div>
+          <button onclick="loadStatus()"
+                  class="px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white text-sm font-medium rounded-lg transition-colors">
+            Refresh
+          </button>
+        </div>
+
+        <!-- Stat cards -->
+        <div id="status-cards" class="grid grid-cols-2 gap-4 mb-8">
+          <div class="bg-white border border-slate-200 rounded-xl p-5 col-span-2 sm:col-span-1">
+            <div class="text-3xl font-bold text-cyan-600" id="stat-total">—</div>
+            <div class="text-sm text-slate-500 mt-1">Total articles</div>
+          </div>
+          <div class="bg-white border border-slate-200 rounded-xl p-5 col-span-2 sm:col-span-1">
+            <div class="text-lg font-semibold text-slate-700" id="stat-updated">—</div>
+            <div class="text-sm text-slate-500 mt-1">Last compiled</div>
+          </div>
+          <div class="bg-white border border-slate-200 rounded-xl p-5 col-span-2 sm:col-span-1">
+            <div class="text-xl font-bold text-amber-500" id="stat-orphans">—</div>
+            <div class="text-sm text-slate-500 mt-1">Orphan articles</div>
+          </div>
+        </div>
+
+        <!-- Section breakdown -->
+        <h2 class="text-sm font-semibold text-slate-700 uppercase tracking-wide mb-3">Articles by section</h2>
+        <div id="status-sections" class="space-y-2">
+          <p class="text-slate-400 text-sm">Loading…</p>
+        </div>
+
+        <p id="status-error" class="hidden mt-4 text-red-500 text-sm"></p>
+      </div><!-- /tab-status -->
+
+    </div><!-- /max-w-5xl -->
+  </main>
+</div><!-- /flex layout -->
+
+
+<!-- ─── JAVASCRIPT ─────────────────────────────────────────────── -->
+<script>
+// ── Tab routing ──────────────────────────────────────────────────
+
+const TABS = ['ingest', 'search', 'ask', 'status'];
+let currentTab = 'ingest';
+
+function switchTab(name) {
+  TABS.forEach(t => {
+    document.getElementById('tab-' + t).classList.remove('active');
+    const btn = document.getElementById('nav-' + t);
+    btn.classList.remove('bg-slate-700', 'text-white');
+    btn.classList.add('text-slate-300', 'hover:bg-slate-700', 'hover:text-white');
+  });
+  document.getElementById('tab-' + name).classList.add('active');
+  const activeBtn = document.getElementById('nav-' + name);
+  activeBtn.classList.add('bg-slate-700', 'text-white');
+  activeBtn.classList.remove('text-slate-300', 'hover:bg-slate-700', 'hover:text-white');
+  currentTab = name;
+
+  if (name === 'status') loadStatus();
+}
+
+// ── Sub-tab routing ──────────────────────────────────────────────
+
+const SUB_TABS = {
+  ingest: ['upload', 'url', 'text', 'seed']
+};
+
+function switchSubTab(parent, name) {
+  const tabs = SUB_TABS[parent] || [];
+  tabs.forEach(t => {
+    const panel = document.getElementById('sub-panel-' + t);
+    const btn   = document.getElementById('sub-' + parent + '-' + t);
+    if (panel) panel.classList.remove('active');
+    if (btn) {
+      btn.classList.remove('border-cyan-500', 'text-cyan-600');
+      btn.classList.add('border-transparent', 'text-slate-500');
+    }
+  });
+  const activePanel = document.getElementById('sub-panel-' + name);
+  const activeBtn   = document.getElementById('sub-' + parent + '-' + name);
+  if (activePanel) activePanel.classList.add('active');
+  if (activeBtn) {
+    activeBtn.classList.add('border-cyan-500', 'text-cyan-600');
+    activeBtn.classList.remove('border-transparent', 'text-slate-500');
+  }
+}
+
+// ── Utility ──────────────────────────────────────────────────────
+
+function showEl(id)  { document.getElementById(id).classList.remove('hidden'); }
+function hideEl(id)  { document.getElementById(id).classList.add('hidden'); }
+
+function resultBox(content, type) {
+  // type: 'success' | 'error'
+  const base = 'rounded-lg px-4 py-3 text-sm';
+  const styles = type === 'error'
+    ? 'bg-red-50 border border-red-200 text-red-700'
+    : 'bg-green-50 border border-green-200 text-green-800';
+  return `<div class="${base} ${styles}">${content}</div>`;
+}
+
+function articlesLabel(n) {
+  return n === 1 ? '1 article' : `${n} articles`;
+}
+
+// ── File upload ──────────────────────────────────────────────────
+
+function handleFileDrop(event) {
+  event.preventDefault();
+  document.getElementById('drop-zone').classList.remove('border-cyan-400', 'bg-cyan-50');
+  const file = event.dataTransfer.files[0];
+  if (file) uploadFile(file);
+}
+
+async function uploadFile(file) {
+  if (!file) return;
+  hideEl('upload-result');
+  showEl('upload-spinner');
+
+  const fd = new FormData();
+  fd.append('file', file);
+
+  try {
+    const resp = await fetch('/api/ingest/file', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || data.error || 'Upload failed');
+    document.getElementById('upload-result').innerHTML = resultBox(
+      `<strong>Done.</strong> ${articlesLabel(data.articles_created)} created from <em>${data.filename}</em> in ${data.elapsed}s.`,
+      'success'
+    );
+  } catch (err) {
+    document.getElementById('upload-result').innerHTML = resultBox(`<strong>Error:</strong> ${err.message}`, 'error');
+  } finally {
+    hideEl('upload-spinner');
+  }
+}
+
+// ── URL ingest ───────────────────────────────────────────────────
+
+async function ingestURL() {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url) { alert('Please enter a URL.'); return; }
+  hideEl('url-result');
+  showEl('url-spinner');
+
+  try {
+    const resp = await fetch('/api/ingest/url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || data.error || 'Scrape failed');
+    document.getElementById('url-result').innerHTML = resultBox(
+      `<strong>Done.</strong> ${articlesLabel(data.articles_created)} created from <em>${data.title}</em> in ${data.elapsed}s.`,
+      'success'
+    );
+  } catch (err) {
+    document.getElementById('url-result').innerHTML = resultBox(`<strong>Error:</strong> ${err.message}`, 'error');
+  } finally {
+    hideEl('url-spinner');
+  }
+}
+
+// ── Text ingest ──────────────────────────────────────────────────
+
+async function ingestText() {
+  const text  = document.getElementById('text-body').value.trim();
+  const title = document.getElementById('text-title').value.trim() || 'Untitled';
+  if (!text) { alert('Please paste some text.'); return; }
+  hideEl('text-result');
+  showEl('text-spinner');
+
+  try {
+    const resp = await fetch('/api/ingest/text', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, title })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || data.error || 'Compile failed');
+    document.getElementById('text-result').innerHTML = resultBox(
+      `<strong>Done.</strong> ${articlesLabel(data.articles_created)} created in ${data.elapsed}s.`,
+      'success'
+    );
+  } catch (err) {
+    document.getElementById('text-result').innerHTML = resultBox(`<strong>Error:</strong> ${err.message}`, 'error');
+  } finally {
+    hideEl('text-spinner');
+  }
+}
+
+// ── Seed topic ───────────────────────────────────────────────────
+
+async function seedTopic() {
+  const topic       = document.getElementById('seed-topic').value.trim();
+  const description = document.getElementById('seed-description').value.trim();
+  const n_articles  = parseInt(document.getElementById('seed-count').value, 10);
+
+  if (!topic) { alert('Please enter a topic name.'); return; }
+
+  hideEl('seed-result');
+  showEl('seed-spinner');
+  document.querySelector('button[onclick="seedTopic()"]').disabled = true;
+
+  try {
+    const resp = await fetch('/api/seed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic, description, n_articles })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || data.error || 'Seed failed');
+    document.getElementById('seed-result').innerHTML = resultBox(
+      `<strong>Done.</strong> Generated ${data.raw_files} research notes, ` +
+      `compiled ${data.compiled} successfully` +
+      (data.failed > 0 ? `, ${data.failed} failed` : '') +
+      `. Elapsed: ${data.elapsed}s.`,
+      data.failed > 0 ? 'error' : 'success'
+    );
+  } catch (err) {
+    document.getElementById('seed-result').innerHTML = resultBox(`<strong>Error:</strong> ${err.message}`, 'error');
+  } finally {
+    hideEl('seed-spinner');
+    document.querySelector('button[onclick="seedTopic()"]').disabled = false;
+  }
+}
+
+// ── Search ───────────────────────────────────────────────────────
+
+let searchTimeout = null;
+
+function debounceSearch(q) {
+  clearTimeout(searchTimeout);
+  if (!q.trim()) {
+    document.getElementById('search-results-wrapper').innerHTML =
+      '<p class="text-slate-400 text-sm text-center py-10">Type to search…</p>';
+    return;
+  }
+  searchTimeout = setTimeout(() => runSearch(q), 300);
+}
+
+async function runSearch(q) {
+  const wrapper = document.getElementById('search-results-wrapper');
+  wrapper.innerHTML = '<p class="text-slate-400 text-sm text-center py-6">Searching…</p>';
+  try {
+    const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}&top=10`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || data.error || 'Search failed');
+    renderSearchResults(data.results, data.elapsed);
+  } catch (err) {
+    wrapper.innerHTML = `<div class="text-red-500 text-sm">${err.message}</div>`;
+  }
+}
+
+function renderSearchResults(results, elapsed) {
+  const wrapper = document.getElementById('search-results-wrapper');
+  if (!results || results.length === 0) {
+    wrapper.innerHTML = '<p class="text-slate-400 text-sm text-center py-10">No results found.</p>';
+    return;
+  }
+
+  let html = `
+    <div class="flex items-center justify-between mb-3">
+      <span class="text-sm text-slate-500">${results.length} result${results.length !== 1 ? 's' : ''} · ${elapsed}s</span>
+    </div>
+    <div class="bg-white border border-slate-200 rounded-xl overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-slate-50 border-b border-slate-200">
+          <tr>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-8">#</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Title</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Section</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide w-20">Relevance</th>
+            <th class="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Snippet</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">`;
+
+  results.forEach((r, i) => {
+    const slug = r.id.replace(/\//g, '__').replace(/\.md$/, '');
+    const rawSlug = r.id.replace(/^[^/]+\//, '').replace(/\.md$/, '');
+    const relColor = r.relevance_pct >= 70 ? 'text-emerald-600' : r.relevance_pct >= 40 ? 'text-amber-500' : 'text-slate-400';
+    const snippet = r.snippet ? escapeHtml(r.snippet.slice(0, 110)) + (r.snippet.length > 110 ? '…' : '') : '—';
+    html += `
+          <tr class="hover:bg-slate-50 transition-colors">
+            <td class="px-4 py-3 text-slate-400 font-mono text-xs">${i + 1}</td>
+            <td class="px-4 py-3">
+              <button onclick="openArticle('${escapeHtml(rawSlug)}', '${escapeHtml(r.title)}')"
+                      class="text-cyan-700 hover:text-cyan-900 font-medium hover:underline text-left">
+                ${escapeHtml(r.title)}
+              </button>
+            </td>
+            <td class="px-4 py-3 text-slate-500">${escapeHtml(r.section)}</td>
+            <td class="px-4 py-3 font-semibold ${relColor}">${r.relevance_pct}%</td>
+            <td class="px-4 py-3 text-slate-500 text-xs max-w-xs truncate">${snippet}</td>
+          </tr>`;
+  });
+
+  html += `</tbody></table></div>`;
+  wrapper.innerHTML = html;
+}
+
+async function openArticle(slug, title) {
+  document.getElementById('article-content-title').textContent = title;
+  document.getElementById('article-content-body').textContent = 'Loading…';
+  showEl('article-content-panel');
+  document.getElementById('article-content-panel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  try {
+    const resp = await fetch(`/api/articles/${encodeURIComponent(slug)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Not found');
+    document.getElementById('article-content-body').textContent = data.content;
+  } catch (err) {
+    document.getElementById('article-content-body').textContent = `Error: ${err.message}`;
+  }
+}
+
+function closeArticle() {
+  hideEl('article-content-panel');
+}
+
+// ── Ask ───────────────────────────────────────────────────────────
+
+async function askQuestion() {
+  const question = document.getElementById('ask-input').value.trim();
+  if (!question) { alert('Please enter a question.'); return; }
+
+  hideEl('ask-result-panel');
+  showEl('ask-spinner');
+
+  try {
+    const resp = await fetch('/api/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, top_n: 5 })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || data.error || 'Query failed');
+
+    // Render markdown-like answer
+    document.getElementById('answer-body').innerHTML = simpleMarkdown(data.answer);
+    document.getElementById('ask-elapsed').textContent = `Generated in ${data.elapsed}s`;
+
+    // Sources
+    const sourcesList = document.getElementById('ask-sources-list');
+    const sourcesWrapper = document.getElementById('ask-sources-wrapper');
+    if (data.sources && data.sources.length > 0) {
+      sourcesList.innerHTML = data.sources.map(s =>
+        `<li class="text-xs text-slate-600">
+           <button onclick="switchTab('search'); document.getElementById('search-input').value='${escapeHtml(s)}'; runSearch('${escapeHtml(s)}')"
+                   class="text-cyan-700 hover:underline font-mono">${escapeHtml(s)}</button>
+         </li>`
+      ).join('');
+      showEl('ask-sources-wrapper');
+    } else {
+      hideEl('ask-sources-wrapper');
+    }
+
+    showEl('ask-result-panel');
+  } catch (err) {
+    document.getElementById('answer-body').innerHTML = `<p class="text-red-600">${err.message}</p>`;
+    showEl('ask-result-panel');
+  } finally {
+    hideEl('ask-spinner');
+  }
+}
+
+// ── Status ────────────────────────────────────────────────────────
+
+async function loadStatus() {
+  document.getElementById('status-sections').innerHTML = '<p class="text-slate-400 text-sm">Loading…</p>';
+  document.getElementById('stat-total').textContent = '—';
+  document.getElementById('stat-updated').textContent = '—';
+  document.getElementById('stat-orphans').textContent = '—';
+  hideEl('status-error');
+
+  try {
+    const resp = await fetch('/api/health');
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || data.error || 'Health fetch failed');
+
+    document.getElementById('stat-total').textContent = data.total_articles;
+    document.getElementById('stat-updated').textContent = data.last_updated || 'unknown';
+    document.getElementById('stat-orphans').textContent = data.orphan_count >= 0 ? data.orphan_count : '—';
+
+    const sections = data.articles_by_section || {};
+    const keys = Object.keys(sections).sort();
+    if (keys.length === 0) {
+      document.getElementById('status-sections').innerHTML = '<p class="text-slate-400 text-sm">No sections found.</p>';
+      return;
+    }
+
+    const maxCount = Math.max(...Object.values(sections), 1);
+    let html = '';
+    keys.forEach(section => {
+      const count = sections[section];
+      const pct   = Math.round(count / maxCount * 100);
+      html += `
+        <div class="flex items-center gap-3">
+          <div class="w-28 text-sm text-slate-600 font-medium truncate">${escapeHtml(section)}</div>
+          <div class="flex-1 bg-slate-100 rounded-full h-2.5">
+            <div class="bg-cyan-500 h-2.5 rounded-full transition-all duration-500" style="width:${pct}%"></div>
+          </div>
+          <div class="w-10 text-right text-sm font-semibold text-slate-700">${count}</div>
+        </div>`;
+    });
+    document.getElementById('status-sections').innerHTML = html;
+
+  } catch (err) {
+    document.getElementById('status-sections').innerHTML = '';
+    const errEl = document.getElementById('status-error');
+    errEl.textContent = `Failed to load status: ${err.message}`;
+    showEl('status-error');
+  }
+}
+
+// ── Utility ───────────────────────────────────────────────────────
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/**
+ * Minimal Markdown → HTML renderer for the answer panel.
+ * Handles: headers, bold, italic, code, bullets, paragraphs, blockquotes.
+ * Does NOT use a library — plain regex transforms over lines.
+ */
+function simpleMarkdown(text) {
+  if (!text) return '';
+  const lines = text.split('\n');
+  const out = [];
+  let inUl = false;
+  let inOl = false;
+
+  function closeList() {
+    if (inUl) { out.push('</ul>'); inUl = false; }
+    if (inOl) { out.push('</ol>'); inOl = false; }
+  }
+
+  function inline(s) {
+    return s
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/_([^_]+)_/g, '<em>$1</em>')
+      .replace(/\[\[([^\]]+)\]\]/g, '<code>$1</code>');
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Blank line
+    if (!line.trim()) {
+      closeList();
+      out.push('<p></p>');
+      continue;
+    }
+
+    // Headers
+    const h3 = line.match(/^### (.+)/);
+    const h2 = line.match(/^## (.+)/);
+    const h1 = line.match(/^# (.+)/);
+    if (h1) { closeList(); out.push(`<h1>${inline(h1[1])}</h1>`); continue; }
+    if (h2) { closeList(); out.push(`<h2>${inline(h2[1])}</h2>`); continue; }
+    if (h3) { closeList(); out.push(`<h3>${inline(h3[1])}</h3>`); continue; }
+
+    // Blockquote
+    const bq = line.match(/^> (.+)/);
+    if (bq) { closeList(); out.push(`<blockquote>${inline(bq[1])}</blockquote>`); continue; }
+
+    // Ordered list
+    const olm = line.match(/^\d+\. (.+)/);
+    if (olm) {
+      if (inUl) { out.push('</ul>'); inUl = false; }
+      if (!inOl) { out.push('<ol>'); inOl = true; }
+      out.push(`<li>${inline(olm[1])}</li>`);
+      continue;
+    }
+
+    // Unordered list
+    const ulm = line.match(/^[-*+] (.+)/);
+    if (ulm) {
+      if (inOl) { out.push('</ol>'); inOl = false; }
+      if (!inUl) { out.push('<ul>'); inUl = true; }
+      out.push(`<li>${inline(ulm[1])}</li>`);
+      continue;
+    }
+
+    // Paragraph
+    closeList();
+    out.push(`<p>${inline(line)}</p>`);
+  }
+
+  closeList();
+  return out.join('\n');
+}
+
+// ── Init ──────────────────────────────────────────────────────────
+
+// htmx indicator support for global spinner
+document.addEventListener('htmx:beforeRequest', () => showEl('global-spinner'));
+document.addEventListener('htmx:afterRequest',  () => hideEl('global-spinner'));
+</script>
+
+</body>
+</html>

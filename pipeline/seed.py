@@ -120,12 +120,15 @@ def _strip_json_fence(raw: str) -> str:
     return raw.strip()
 
 
-def _extract_section(label: str, text: str, next_label: str = "") -> str:
-    """Extract the text under a LABEL: heading up to the next heading or end."""
-    if next_label:
-        pattern = rf"{re.escape(label)}:\s*(.*?)(?={re.escape(next_label)}:|$)"
-    else:
-        pattern = rf"{re.escape(label)}:\s*(.*)"
+_SECTION_LABELS = [
+    "CORE CONCEPT", "KEY CLAIMS", "ARCHITECTURE/APPROACH", "CONNECTIONS", "SOURCES"
+]
+
+def _extract_section(label: str, text: str) -> str:
+    """Extract text under LABEL: up to the next known section heading or end of string."""
+    other_labels = [l for l in _SECTION_LABELS if l != label]
+    stop = "|".join(re.escape(l) for l in other_labels)
+    pattern = rf"{re.escape(label)}:\s*(.*?)(?=(?:{stop}):|$)"
     m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
     return m.group(1).strip() if m else ""
 
@@ -179,15 +182,63 @@ def _plan_topics(
     )
     try:
         raw = _llm_call(client, system, user, max_tokens=1500)
-        cleaned = _strip_json_fence(raw)
-        topics: list[dict] = json.loads(cleaned)
-        if not isinstance(topics, list):
-            raise ValueError("Expected JSON array")
-        return topics
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.error("Topic planning failed for %r: %s", topic, exc)
-        logger.debug("Raw plan response: %s", raw[:500] if "raw" in dir() else "")
+    except Exception as exc:
+        logger.error("Topic planning LLM call failed for %r: %s", topic, exc)
         return []
+
+    cleaned = _strip_json_fence(raw)
+
+    # Attempt 1: direct parse
+    try:
+        topics = json.loads(cleaned)
+        if isinstance(topics, list) and topics:
+            return _validate_topics(topics)
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt 2: extract the first JSON array from anywhere in the response
+    m = re.search(r"\[.*\]", cleaned, re.DOTALL)
+    if m:
+        try:
+            topics = json.loads(m.group(0))
+            if isinstance(topics, list) and topics:
+                return _validate_topics(topics)
+        except json.JSONDecodeError:
+            pass
+
+    # Attempt 3: extract individual {...} objects and assemble a list
+    objects = re.findall(r"\{[^{}]+\}", cleaned, re.DOTALL)
+    if objects:
+        parsed = []
+        for obj in objects:
+            try:
+                parsed.append(json.loads(obj))
+            except json.JSONDecodeError:
+                pass
+        if parsed:
+            return _validate_topics(parsed)
+
+    logger.error("Topic planning failed for %r — could not parse JSON from response", topic)
+    logger.debug("Raw plan response: %.500s", raw)
+    return []
+
+
+def _validate_topics(raw: list) -> list[dict]:
+    """Keep only objects that have a non-empty slug; fill in missing fields."""
+    valid = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        slug = str(item.get("slug", "")).strip()
+        if not slug:
+            continue
+        valid.append({
+            "slug": slug,
+            "title": str(item.get("title", slug.replace("-", " ").title())).strip(),
+            "tags": item.get("tags", []) if isinstance(item.get("tags"), list) else [],
+            "summary": str(item.get("summary", f"Key concept: {slug}")).strip(),
+        })
+    return valid
 
 
 # ── Content generation ─────────────────────────────────────────────────────────
@@ -234,10 +285,10 @@ def _generate_raw_content(
         logger.warning("Content generation failed for %s: %s", slug, exc)
         return None
 
-    core = _extract_section("CORE CONCEPT", content, "KEY CLAIMS")
-    claims_raw = _extract_section("KEY CLAIMS", content, "ARCHITECTURE/APPROACH")
-    arch = _extract_section("ARCHITECTURE/APPROACH", content, "CONNECTIONS")
-    conns = _extract_section("CONNECTIONS", content, "SOURCES")
+    core = _extract_section("CORE CONCEPT", content)
+    claims_raw = _extract_section("KEY CLAIMS", content)
+    arch = _extract_section("ARCHITECTURE/APPROACH", content)
+    conns = _extract_section("CONNECTIONS", content)
     sources = _extract_section("SOURCES", content)
 
     claims_formatted = _format_bullets(claims_raw) or f"- Key concept in {domain} domain."
@@ -329,10 +380,16 @@ def seed_topic(
             result["failed"].append(slug)
             continue
 
-        # Write raw file: raw_dir / seed-{slug}-{date} / {date}-{slug}.md
+        # Write raw file: raw_dir / seed-{slug}-{date} / {date}-{slug}[-N].md
+        # Append a counter suffix if the file already exists (prevents silent overwrites).
         batch_dir = raw_dir / f"seed-{slug}-{today}"
         batch_dir.mkdir(parents=True, exist_ok=True)
         file_path = batch_dir / f"{today}-{slug}.md"
+        if file_path.exists():
+            counter = 2
+            while (batch_dir / f"{today}-{slug}-{counter}.md").exists():
+                counter += 1
+            file_path = batch_dir / f"{today}-{slug}-{counter}.md"
 
         try:
             file_path.write_text(raw_content, encoding="utf-8")

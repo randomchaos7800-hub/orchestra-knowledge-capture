@@ -72,6 +72,12 @@ def _save_raw(content: str, slug: str) -> Path:
     batch.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%H%M%S")
     path = batch / f"{today}-{ts}-{slug}.md"
+    # Guard against same-second duplicates
+    if path.exists():
+        counter = 2
+        while (batch / f"{today}-{ts}-{slug}-{counter}.md").exists():
+            counter += 1
+        path = batch / f"{today}-{ts}-{slug}-{counter}.md"
     path.write_text(content, encoding="utf-8")
     return path
 

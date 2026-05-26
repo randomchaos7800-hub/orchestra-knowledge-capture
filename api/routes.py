@@ -156,9 +156,9 @@ def _build_health() -> dict:
         last_updated = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
     result = {
-        "total": total,
-        "counts": counts,
-        "orphans": orphans,
+        "total_articles": total,
+        "articles_by_section": counts,
+        "orphan_count": orphans,
         "last_updated": last_updated,
     }
     _health_cache = result
